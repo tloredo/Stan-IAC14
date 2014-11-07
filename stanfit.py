@@ -1,5 +1,5 @@
 """
-A wrapper around PyStan's pystan.stan fitting method, providing a somewhat
+A wrapper around PyStan's compilation and fitting methods, providing a somewhat
 more "Pythonic" interface to the fit results.
 
 For PyStan info:
@@ -8,6 +8,9 @@ https://pystan.readthedocs.org/en/latest/getting_started.html
 
 Created 2014-11-04 by Tom Loredo
 """
+
+import cPickle, glob
+from hashlib import md5
 
 import matplotlib.pyplot as plt
 import pystan
@@ -65,14 +68,16 @@ class StanFit:
                'n_eff' : 'ess',
                'Rhat' : 'Rhat'}
 
-    def __init__(self, code, data, n_chains, n_iter, **kwds):
+    def __init__(self, source, data=None, n_chains=None, n_iter=None, 
+                 name=None, **kwds):
         """
         Run an initial Stan fit.
 
         Parameters
         ----------
-        code : string
-            String containing the Stan code for the model
+        source : string
+            Path to a file (ending with ".stan") containing the Stan code for
+            a model, or a string containing the code itself
         data : dict
             Dict of data corresponding to the model's data block
         n_chains : int
@@ -80,37 +85,32 @@ class StanFit:
         n_iter : int
             Number of iterations per chain for the initial run
         """
-        self.code = code
+        if len(source) == 1 and source[-5:] == '.stan':
+            with open(source, 'r') as sfile:
+                self.code = sfile.read()
+        else:
+            self.code = source
+        self.name = name
+        self._compile()
+
         self.data = data
         self.n_chains = n_chains
         self.n_iter = n_iter
+
+        if data:
+            self._get_param_info()
+
         # The actual fit!
-        fit = pystan.stan(model_code=code, data=data, chains=n_chains,
-                               iter=n_iter, **kwds)
+        if data is not None and n_chains is not None and n_iter is not None:
+            self.fit = self.model.sampling(data=data, chains=n_chains,
+                                      iter=n_iter, **kwds)
+        else:
+            self.fit = None
     
-        self.par_names = fit.model_pars  # unicode param names
-        self.par_dims = {}
-        for name, dim in zip(self.par_names, fit.par_dims):
-            self.par_dims[name] = dim
-    
-        # Collect attribute names for storing param info, protecting from name
-        # collision in this namespace.
-        # *** Note this doesn't protect against future collisions! ***
-        par_attr_names = {}
-        for name in self.par_names:
-            if hasattr(self, name):
-                name_ = name + '_'
-                if hasattr(self, name_):
-                    raise ValueError('Cannot handle param name collision!')
-                print '*** Access param "{0}" via "{0}_". ***'.format(name)
-                par_attr_names[name] = name_
-            else:
-                par_attr_names[name] = name
-        self.par_attr_names = par_attr_names
 
         # Collect info from the fit that shouldn't change if the fit is
-        # extended.
-        raw_summary = fit.summary()
+        # repeated.
+        raw_summary = self.fit.summary()
         # Column names list the various types of statistics.
         self.sum_cols = raw_summary['summary_colnames']
         # Get indices into the summary table for the columns.
@@ -129,14 +129,69 @@ class StanFit:
         # Index for log_p:
         self.logp_indx = self.sum_rows.index('lp__')
 
-        self._update_fit(fit, raw_summary)
+        self._update_fit_results(raw_summary)
 
-    def _update_fit(self, fit, raw_summary):
+    def _compile(self):
         """
-        Update attributes with results of a fit (an initial fit or an
-        extension of a previous fit).
+        Compile a Stan model if necessary, loading a previously compiled
+        version if available.
         """
-        self.fit = fit
+        code_hash = md5(self.code.encode('ascii')).hexdigest()
+        files = glob.glob('*-'+code_hash+'.pkl')
+        if files:
+            if len(files) != 1:
+                raise RuntimeError('Cache collision---multiple matching cache files!')
+            cache_path = files[0]
+            self.name, self.model = cPickle.load(open(files[0], 'rb'))
+            print 'Using cached StanModel "{0}" from {1}.'.format(self.name, files[0])
+        else:
+            self.model = pystan.StanModel(model_code=self.code)
+            if self.name is None:
+                cache_path = 'cached-model-{}.pkl'.format(code_hash)
+            else:
+                cache_path = 'cached-{}-{}.pkl'.format(name, code_hash)
+            with open(cache_path, 'wb') as f:
+                cPickle.dump((self.name, self.model), f)
+
+    def _get_param_info(self):
+        """
+        Collect info about parameters for an application of the model to the
+        current dataset.
+
+        Note that since hierarchical models are supported by Stan, the
+        parameter space is not completely defined until a dataset is
+        specified (the dataset size determines the number of latent
+        parameters in hierarchical models).
+        """
+        fit = self.model.fit_class(self.data)
+        self.par_names = fit._get_param_names()  # unicode param names
+        self.par_dims = {}
+        for name, dim in zip(self.par_names, fit._get_param_dims()):
+            self.par_dims[name] = dim
+        # Stan includes log_prob in the param list; we'll track it separately.
+        indx_of_lp = self.par_names.index('lp__')
+        del self.par_names[indx_of_lp]
+        del self.par_dims['lp__']
+
+        # Collect attribute names for storing param info, protecting from name
+        # collision in this namespace.
+        # *** Note this doesn't protect against subsequent collisions! ***
+        par_attr_names = {}
+        for name in self.par_names:
+            if hasattr(self, name):
+                name_ = name + '_'
+                if hasattr(self, name_):
+                    raise ValueError('Cannot handle param name collision!')
+                print '*** Access param "{0}" via "{0}_". ***'.format(name)
+                par_attr_names[name] = name_
+            else:
+                par_attr_names[name] = name
+        self.par_attr_names = par_attr_names
+
+    def _update_fit_results(self, raw_summary):
+        """
+        Update attributes with results from the current fit.
+        """
         self.chains = self.fit.extract(permuted=True)
         self.raw_summary = raw_summary  # dict of fit statistics
         self.summary = raw_summary['summary']
@@ -180,15 +235,16 @@ class StanFit:
         # 95% central credible interval:
         param['intvl95'] = (param['q025'], param['q975'])
 
-    def refit(self, n_iter=None, n_chains=None, data=None, **kwds):
+    def sample(self, n_iter=None, n_chains=None, data=None, **kwds):
         """
-        Refit the current model, potentially using new data.
+        Run a posterior sampler using the compiled model, potentially using new
+        data.
 
         The argument order was chosen to make it easiest to refit the same
-        data with a longer run of the sampler; refit(n) does this.
+        data with a longer run of the sampler; sample(n) does this.
 
         This skips the model compilation step, but otherwise runs a fresh
-        fit.
+        MCMC chain.
         """
         if n_iter is None:
             n_iter = self.n_iter
