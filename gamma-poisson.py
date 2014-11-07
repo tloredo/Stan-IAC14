@@ -78,7 +78,7 @@ if True:
     alpha = .4  # power law part has exponent alpha-1; requires alpha > 0
 
     # Variables describing the data sample:
-    n_s = 100
+    n_s = 11
     area = 335.  # Single BATSE LAD effective area, cm^2
     # Fake projected areas for a triggered detector:
     areas = area*stats.uniform(loc=.5, scale=.5).rvs(n_s)
