@@ -192,8 +192,9 @@ class StanFit:
         """
         Update attributes with results from the current fit.
         """
-        # Extract chains, merged (permuted=True), with burn-in discarded
-        # (inc_warmup=False); provided as a param-keyed dict.
+        # Extract chains, merged via random permutation (permuted=True), with
+        # burn-in discarded (inc_warmup=False), as a param-keyed dict.
+        # The permutation seems misleading to me but is recommended.
         self.chains = self.fit.extract(permuted=True)
         self.raw_summary = raw_summary  # dict of fit statistics
         self.summary = raw_summary['summary']
