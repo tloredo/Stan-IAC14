@@ -192,6 +192,8 @@ class StanFit:
         """
         Update attributes with results from the current fit.
         """
+        # Extract chains, merged (permuted=True), with burn-in discarded
+        # (inc_warmup=False); provided as a param-keyed dict.
         self.chains = self.fit.extract(permuted=True)
         self.raw_summary = raw_summary  # dict of fit statistics
         self.summary = raw_summary['summary']
@@ -202,31 +204,20 @@ class StanFit:
             attr_name = self.par_attr_names[name]
             row = self.par_indices[name]
             if not self.par_dims[name]:  # scalar param
-                param = ParamHandler(fit=self.fit, name=name)
+                param = self._make_param_handler(name, row)
                 setattr(self, attr_name, param)
-                param['chain'] = self.chains[name]
-                for stat in self.sum_cols:
-                    col = self.col_indices[stat]
-                    param[self.col_map[stat]] = self.summary[row,col]
-                # 95% central credible interval:
-                param['intvl95'] = (param['q025'], param['q975'])
-            elif len(self.par_dims[name]) == 1:  # vector param
+            elif len(self.par_dims[name]) == 1:  # vector param as list attr
                 l = []
                 for i in xrange(self.par_dims[name][0]):
-                    param = ParamHandler(fit=self.fit, name=name+'[%i]'%i)
-                    param['chain'] = self.chains[name][:,i]
-                    for stat in self.sum_cols:
-                        col = self.col_indices[stat]
-                        param[self.col_map[stat]] = self.summary[row+i,col]
-                    param['intvl95'] = (param['q025'], param['q975'])
+                    param = self._make_param_handler(name, row, i)
                     l.append(param)
                 setattr(self, attr_name, l)
             else:
                 # Could just direct user to summary attribute...
                 raise NotImplementedError('Only scalar & vector params supported!')
 
-        # Make a handler for log_p.
-        param = ParamHandler(fit=self.fit, name='log_p')
+        # Make a handler for log_p, the last "parameter" in the Stan table.
+        param = self._make_param_handler('log_p')
         setattr(self, 'log_p', param)
         param['chain'] = self.chains['lp__']
         for stat in self.sum_cols:
@@ -234,6 +225,42 @@ class StanFit:
             param[self.col_map[stat]] = self.summary[-1,col]
         # 95% central credible interval:
         param['intvl95'] = (param['q025'], param['q975'])
+
+    def _make_param_handler(self, name, row=None, item=None, log_p=False):
+        """
+        Create a ParamHandler instance for parameter name `name` and make
+        it an attribute, using data from (row,col) in the fit summary table.
+
+        Call with (name, row) for a scalar parameter.
+
+        Call with (name, row, item) for an element of a vector parameter.
+
+        Call with (name, log_p=True) for log_prob.
+        """
+        # Set the key to use for Stan table lookups.
+        if name == 'log_p':
+            key = 'lp__'
+        else:
+            key = name
+
+        # Scalars and vectors handle names differently; vectors use `item`.
+        if item is None:
+            pname = name  # name to store in the handler
+            prow = row
+            chain = self.chains[key]
+        else:
+            pname = name + '[%i]' % item
+            prow = row + item
+            chain = self.chains[key][:,item]
+
+        param = ParamHandler(fit=self.fit, name=pname)
+        param['chain'] = chain
+        for stat in self.sum_cols:
+            col = self.col_indices[stat]
+            param[self.col_map[stat]] = self.summary[prow,col]
+        # 95% central credible interval:
+        param['intvl95'] = (param['q025'], param['q975'])
+        return param
 
     def sample(self, n_iter=None, n_chains=None, data=None, **kwds):
         """
