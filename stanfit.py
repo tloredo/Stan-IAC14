@@ -12,6 +12,7 @@ Created 2014-11-04 by Tom Loredo
 import cPickle, glob
 from hashlib import md5
 
+import numpy as np
 import matplotlib.pyplot as plt
 import pystan
 
@@ -34,12 +35,32 @@ class ParamHandler(dict):
         super(ParamHandler, self).__init__(*args, **kwargs)
         self.__dict__ = self
 
-    def trace(self, axes=None, xlabel=None, ylabel=None, **kwds):
+    def trace(self, chain=None, step=True, axes=None,
+                    xlabel=None, ylabel=None, **kwds):
+        """
+        Make a trace plot for the samples in chain `chain`.  If `chain` is None,
+        show traces for all chains, iterating colors accorting to mpl defaults.
+
+        By default, a step plot is used; set `step` to False for a line plot.
+        """
         if axes is None:
             fig = plt.figure(figsize=(10,4))
             fig.subplots_adjust(bottom=.2, top=.9)
             axes = plt.subplot(111)
-        axes.plot(self.chain, **kwds)
+        if chain is None:
+            if step:
+                times = xrange(self.chains.shape[0])
+                for c in range(self.chains.shape[1]):
+                    axes.step(times, self.chains[:,c], where='pre', **kwds)
+            else:
+                for c in range(self.chains.shape[1]):
+                    axes.plot(self.chains[:,c], **kwds)
+        else:
+            if step:
+                times = xrange(self.chains.shape[0])
+                axes.step(times, self.chains[:,chain], where='pre', **kwds)
+            else:
+                axes.plot(self.chains[:,chain], **kwds)
         if xlabel:
             axes.set_xlabel(xlabel)
         else:
@@ -159,7 +180,7 @@ class StanFit:
         current dataset.
 
         Note that since hierarchical models are supported by Stan, the
-        parameter space is not completely defined until a dataset is
+        parameter space may not be completely defined until a dataset is
         specified (the dataset size determines the number of latent
         parameters in hierarchical models).
         """
@@ -168,14 +189,32 @@ class StanFit:
         self.par_dims = {}
         for name, dim in zip(self.par_names, fit._get_param_dims()):
             self.par_dims[name] = dim
-        # Stan includes log_prob in the param list; we'll track it separately.
+
+        # Make an index for accessing chains in fit.extract() results.
+        # Note that 'lp__' is included here, and used in _make_param_handler.
+        indx = 0
+        self.par_indx = {}
+        for name in self.par_names:
+            self.par_indx[name] = indx
+            dims = self.par_dims[name]
+            if dims:
+                indx += np.prod(dims)
+            else:
+                indx += 1  # technically could use prod(dims)=1. for dims=[]
+        # self.log_p_indx = self.par_indx['lp__']
+
+        # Stan includes log_prob in the param list; we'll track it separately
+        # so remove it from the param info.
         indx_of_lp = self.par_names.index('lp__')
         del self.par_names[indx_of_lp]
         del self.par_dims['lp__']
+        # del self.par_indx['lp__']
 
         # Collect attribute names for storing param info, protecting from name
         # collision in this namespace.
-        # *** Note this doesn't protect against subsequent collisions! ***
+        # *** This doesn't protect against subsequent collision/overwriting. ***
+        # TODO:  Make sure all needed class attributes are defined before this
+        # runs, or otherwise protected.
         par_attr_names = {}
         for name in self.par_names:
             if hasattr(self, name):
@@ -192,11 +231,16 @@ class StanFit:
         """
         Update attributes with results from the current fit.
         """
-        # Extract chains, merged via random permutation (permuted=True), with
-        # burn-in discarded (inc_warmup=False), as a param-keyed dict.
-        # The permutation seems misleading to me but is recommended.
-        self.chains = self.fit.extract(permuted=True)
-        self.raw_summary = raw_summary  # dict of fit statistics
+        # Extract chains, kept separate and ordered (permuted=False), with
+        # burn-in discarded (inc_warmup=False), as an array indexed as
+        # [sample #, chain #, param #]; note that log_p is added to the end
+        # of the param list.
+        self.chains = self.fit.extract(permuted=False)
+        # Collect samples from the chains, merged via random permutation
+        # (permuted=True), with burn-in discarded (inc_warmup=False), as a
+        # param-keyed dict.
+        self.samples = self.fit.extract(permuted=True)
+        self.raw_summary = raw_summary  # dict of fit statistics (Rhat, ess...)
         self.summary = raw_summary['summary']
 
         # Populate namespace with handlers for each param, holding
@@ -220,7 +264,7 @@ class StanFit:
         # Make a handler for log_p, the last "parameter" in the Stan table.
         param = self._make_param_handler('log_p')
         setattr(self, 'log_p', param)
-        param['chain'] = self.chains['lp__']
+        param['chain'] = self.samples['lp__']
         for stat in self.sum_cols:
             col = self.col_indices[stat]
             param[self.col_map[stat]] = self.summary[-1,col]
@@ -245,17 +289,20 @@ class StanFit:
             key = name
 
         # Scalars and vectors handle names differently; vectors use `item`.
-        if item is None:
+        if item is None:  # scalar case
             pname = name  # name to store in the handler
             prow = row
-            chain = self.chains[key]
-        else:
+            samples = self.samples[key]
+            chains = self.chains[:,:,self.par_indx[key]]
+        else:  # vector case
             pname = name + '[%i]' % item
             prow = row + item
-            chain = self.chains[key][:,item]
+            samples = self.samples[key][:,item]
+            chains = self.chains[:,:,self.par_indx[key]+item]
 
         param = ParamHandler(fit=self.fit, name=pname)
-        param['chain'] = chain
+        param['samples'] = samples
+        param['chains'] = chains
         for stat in self.sum_cols:
             col = self.col_indices[stat]
             param[self.col_map[stat]] = self.summary[prow,col]
