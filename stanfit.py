@@ -119,39 +119,14 @@ class StanFit:
         self.n_iter = n_iter
 
         if data:
-            self._get_param_info()
+            self._set_data(data)
 
         # The actual fit!
         if data is not None and n_chains is not None and n_iter is not None:
-            self.fit = self.model.sampling(data=data, chains=n_chains,
-                                      iter=n_iter, **kwds)
+            self.sample(data=data, chains=n_chains, iter=n_iter, **kwds)
         else:
             self.fit = None
     
-
-        # Collect info from the fit that shouldn't change if the fit is
-        # repeated.
-        raw_summary = self.fit.summary()
-        # Column names list the various types of statistics.
-        self.sum_cols = raw_summary['summary_colnames']
-        # Get indices into the summary table for the columns.
-        self.col_indices = {}
-        for i, name in enumerate(self.sum_cols):
-            self.col_indices[name] = i
-        # Row names list the parameters; convert from an ndarray to a list.
-        self.sum_rows = [name for name in raw_summary['summary_rownames']]
-        # Get indices for params; for vectors store the offset for 0th entry.
-        self.par_indices = {}
-        for name in self.par_names:
-            if not self.par_dims[name]:  # scalar param
-                self.par_indices[name] = self.sum_rows.index(name)
-            else:  # vector
-                self.par_indices[name] = self.sum_rows.index(name+'[0]')
-        # Index for log_p:
-        self.logp_indx = self.sum_rows.index('lp__')
-
-        self._update_fit_results(raw_summary)
-
     def _compile(self):
         """
         Compile a Stan model if necessary, loading a previously compiled
@@ -174,20 +149,20 @@ class StanFit:
             with open(cache_path, 'wb') as f:
                 cPickle.dump((self.name, self.model), f)
 
-    def _get_param_info(self):
+    def _set_data(self, data):
         """
-        Collect info about parameters for an application of the model to the
-        current dataset.
+        Set the data info dictionary, and collect info about parameters for an
+        application of the model to the dataset.
 
         Note that since hierarchical models are supported by Stan, the
         parameter space may not be completely defined until a dataset is
         specified (the dataset size determines the number of latent
         parameters in hierarchical models).
         """
-        fit = self.model.fit_class(self.data)
-        self.par_names = fit._get_param_names()  # unicode param names
+        self.fit = self.model.fit_class(self.data)
+        self.par_names = self.fit._get_param_names()  # unicode param names
         self.par_dims = {}
-        for name, dim in zip(self.par_names, fit._get_param_dims()):
+        for name, dim in zip(self.par_names, self.fit._get_param_dims()):
             self.par_dims[name] = dim
 
         # Make an index for accessing chains in fit.extract() results.
@@ -227,7 +202,33 @@ class StanFit:
                 par_attr_names[name] = name
         self.par_attr_names = par_attr_names
 
-    def _update_fit_results(self, raw_summary):
+    def _get_table_info(self):
+        """
+        Get information about the summary table from a fit to the current data.
+
+        This information (largely dimensional/indexing) does not actually
+        require a fit to be done, but it is only available from Stan post-fit.
+        """
+        # Collect info from the fit that shouldn't change if the fit is
+        # re-run.
+        self.raw_summary = self.fit.summary()  # dict of fit statistics (Rhat, ess...)
+        # Column names list the various types of statistics.
+        self.sum_cols = self.raw_summary['summary_colnames']
+        # Get indices into the summary table for the columns.
+        self.col_indices = {}
+        for i, name in enumerate(self.sum_cols):
+            self.col_indices[name] = i
+        # Row names list the parameters; convert from an ndarray to a list.
+        self.sum_rows = [name for name in self.raw_summary['summary_rownames']]
+        # Get indices for params; for vectors store the offset for 0th entry.
+        self.par_indices = {}
+        for name in self.par_names:
+            if not self.par_dims[name]:  # scalar param
+                self.par_indices[name] = self.sum_rows.index(name)
+            else:  # vector
+                self.par_indices[name] = self.sum_rows.index(name+'[0]')
+
+    def _update_fit_results(self):
         """
         Update attributes with results from the current fit.
         """
@@ -240,8 +241,7 @@ class StanFit:
         # (permuted=True), with burn-in discarded (inc_warmup=False), as a
         # param-keyed dict.
         self.samples = self.fit.extract(permuted=True)
-        self.raw_summary = raw_summary  # dict of fit statistics (Rhat, ess...)
-        self.summary = raw_summary['summary']
+        self.summary = self.raw_summary['summary']
 
         # Populate namespace with handlers for each param, holding
         # various data from the fit.
@@ -325,19 +325,20 @@ class StanFit:
             n_iter = self.n_iter
         else:
             self.n_iter = n_iter
-        if data is None:
-            data = self.data
-        else:
-            self.data = data
+        if data is not None:
+            self._set_data(data)
         if n_chains is None:
             n_chains = self.n_chains
         else:
            self.n_chains = n_chains
         self.n_iter = n_iter
         # The actual fit!
-        fit = pystan.stan(fit=self.fit, data=self.data, chains=self.n_chains,
-                               iter=self.n_iter, **kwds)
-        self._update_fit(fit, fit.summary())
+        self.fit = self.model.sampling(data=self.data, chains=self.n_chains,
+                                      iter=self.n_iter, **kwds)
+        # fit = pystan.stan(fit=self.fit, data=self.data, chains=self.n_chains,
+        #                        iter=self.n_iter, **kwds)
+        self._get_table_info()  # *** only needed for 1st fit to a data set
+        self._update_fit_results()
 
     def stan_plot(self):
         self.fit.plot()
