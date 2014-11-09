@@ -78,7 +78,7 @@ if True:
     alpha = .4  # power law part has exponent alpha-1; requires alpha > 0
 
     # Variables describing the data sample:
-    n_s = 11
+    n_s = 10
     area = 335.  # Single BATSE LAD effective area, cm^2
     # Fake projected areas for a triggered detector:
     areas = area*stats.uniform(loc=.5, scale=.5).rvs(n_s)
@@ -105,23 +105,8 @@ def gen_data():
 
 data = gen_data()
 
-
-
 # Invoke Stan.
-if False:
-    fit = pystan.stan(model_code=code, data=data,
-                    iter=1000, chains=4)
+fit = StanFit(code, data)
 
-    # More iterations:
-    #fit2 = pystan.stan(fit=fit1, data=schools_dat, iter=10000, chains=4)
-
-    chains = fit.extract(permuted=True)  # return a dictionary of arrays
-    alphas = chains['alpha']
-    betas = chains['beta']
-    flux_chains = chains['fluxes']
-
-
-    ## return an array of three dimensions: iterations, chains, parameters
-    a = fit.extract(permuted=False)
-
-fit = StanFit(code, data, 4, 1000)
+# Run 4 chains of length 1000 (Stan will use 1/2 of each for burn-in).
+fit.sample(1000, 4)
