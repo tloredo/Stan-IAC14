@@ -51,14 +51,16 @@ class ParamHandler(dict):
             if step:
                 times = xrange(self.chains.shape[0])
                 for c in range(self.chains.shape[1]):
-                    axes.step(times, self.chains[:,c], where='pre', **kwds)
+                    axes.step(times, self.chains[:,c], where='pre',
+                              label='%i'%c, **kwds)
             else:
                 for c in range(self.chains.shape[1]):
                     axes.plot(self.chains[:,c], **kwds)
         else:
             if step:
                 times = xrange(self.chains.shape[0])
-                axes.step(times, self.chains[:,chain], where='pre', **kwds)
+                axes.step(times, self.chains[:,chain], where='pre',
+                          label='%i'%c, **kwds)
             else:
                 axes.plot(self.chains[:,chain], **kwds)
         if xlabel:
@@ -69,6 +71,9 @@ class ParamHandler(dict):
             axes.set_ylabel(ylabel)
         else:
             axes.set_ylabel(self.name)
+        if chain is None:
+            axes.legend(fontsize='small', labelspacing=.2, borderpad=.3)
+        axes.figure.show()  # needed for display update with axes
 
 
 class StanFit:
@@ -106,7 +111,7 @@ class StanFit:
         n_iter : int
             Number of iterations per chain for the initial run
         """
-        if len(source) == 1 and source[-5:] == '.stan':
+        if source.count('\n') == 0 and source[-5:] == '.stan':
             with open(source, 'r') as sfile:
                 self.code = sfile.read()
         else:
