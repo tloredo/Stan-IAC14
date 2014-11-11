@@ -53,7 +53,7 @@ transformed parameters {
 
 model {
     alpha ~ exponential(1.0);
-    beta ~ gamma(0.1, 1.0);
+    beta ~ gamma(0.1, 0.1);
     for (i in 1:N){
         fluxes[i] ~ gamma(alpha, beta);
         counts[i] ~ poisson(fluxes[i] * exposures[i]);
@@ -85,7 +85,7 @@ if True:
     alpha = .4  # power law part has exponent alpha-1; requires alpha > 0
 
     # Variables describing the data sample:
-    n_s = 25
+    n_s = 10
     area = 335.  # Single BATSE LAD effective area, cm^2
     # Fake projected areas for a triggered detector:
     areas = area*stats.uniform(loc=.5, scale=.5).rvs(n_s)
